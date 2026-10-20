@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#4f7cff">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Emoji Talk</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <button id="back" class="icon-btn" aria-label="Back" hidden>⬅️</button>
+    <div id="current" aria-live="polite"></div>
+    <button id="home" class="icon-btn" aria-label="Choose language" hidden>🌍</button>
+  </header>
+
+  <main>
+    <!-- Screen 1: languages -->
+    <section id="screen-langs" class="grid langs"></section>
+
+    <!-- Screen 2: sentences -->
+    <section id="screen-phrases" class="grid phrases" hidden></section>
+
+    <!-- Screen 3: question + child's answers -->
+    <section id="screen-ask" hidden>
+      <div class="question">
+        <button id="replay" class="big-emoji" aria-label="Play again"></button>
+        <p id="question-text" class="subtitle"></p>
+      </div>
+      <div id="answers" class="grid answers"></div>
+      <div class="mic-row">
+        <button id="mic" class="mic" aria-label="Record an answer">🎤</button>
+      </div>
+      <div id="transcript" class="transcript" hidden>
+        <p><span aria-hidden="true">🗣️</span> <span id="heard"></span></p>
+        <p class="english"><span aria-hidden="true">🇬🇧</span> <span id="english"></span></p>
+        <button id="speak-english" class="icon-btn" aria-label="Say in English">🔊</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Full-screen display of the child's tapped answer -->
+  <div id="answer-overlay" class="overlay" hidden>
+    <div class="overlay-emoji"></div>
+    <div class="overlay-text"></div>
+  </div>
+
+  <script src="phrases.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
