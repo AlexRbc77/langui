@@ -107,16 +107,19 @@ function renderAsk() {
     ...p.answers.map((a) => tile(a.e, null, a.en, () => showAnswer(a.e, a.en)))
   );
 
-  $("#transcript").hidden = true;
+  MODES.child.panel.hide();
   playback.hidden = true;
-  stopListening();
 }
 
 function show(name) {
   for (const [key, el] of Object.entries(screens)) el.hidden = key !== name;
   $("#back").hidden = name === "langs";
   $("#home").hidden = name !== "ask";
+  $("#staff-mic").hidden = name !== "phrases";
+  stopListening();
+  MODES.staff.panel.hide();
   $("#current").textContent = state.lang ? state.lang.flag : "🌍";
+  $("#staff-flag").textContent = state.lang ? state.lang.flag : "";
   window.scrollTo(0, 0);
 }
 
@@ -158,19 +161,58 @@ overlay.addEventListener("click", hideAnswer);
 
 // ---------- Recording + translation ----------
 //
-// Primary path: Chrome's speech recognition (transcribes the child's language,
-// then we translate it to English).
-// Fallback path: if recognition is missing or fails, record raw audio with
-// MediaRecorder so staff can at least play the message back.
+// Two microphones share this code:
+//  - the child's 🎤 on the question screen: child's language → English
+//  - the staff 🎤 in the header: English → child's language
+//
+// Primary path: Chrome's speech recognition, then the text is translated.
+// Fallback (child only): if recognition is missing or fails, record raw audio
+// with MediaRecorder so staff can at least play the message back.
 
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const ENGLISH = LANGUAGES.find((l) => l.id === "en");
 let recognizer = null;
 let mediaRecorder = null;
-let finalText = "";
 let latestText = "";
 
-const micBtn = $("#mic");
 const playback = $("#playback");
+
+function makePanel(panel, heard, out, speakBtn) {
+  return {
+    show(heardText, outText) {
+      panel.hidden = false;
+      heard.textContent = heardText;
+      heard.dir = "auto";
+      out.textContent = outText;
+      out.dir = "auto";
+    },
+    heard,
+    out,
+    speakBtn,
+    hide() {
+      panel.hidden = true;
+    },
+  };
+}
+
+const MODES = {
+  child: {
+    btn: $("#mic"),
+    panel: makePanel($("#transcript"), $("#heard"), $("#english"), $("#speak-english")),
+    from: () => state.lang,
+    to: () => ENGLISH,
+    audioFallback: true,
+  },
+  staff: {
+    btn: $("#staff-mic"),
+    panel: makePanel($("#staff-panel"), $("#staff-heard"), $("#staff-out"), $("#staff-speak")),
+    from: () => ENGLISH,
+    to: () => state.lang,
+    audioFallback: false,
+  },
+};
+
+let active = null; // the mode currently recording
 
 // Errors where plain audio recording is still worth trying.
 const FALLBACK_ERRORS = ["service-not-allowed", "language-not-supported", "network", "bad-grammar"];
@@ -184,9 +226,9 @@ const RECOGNITION_ERRORS = {
   "language-not-supported": "This language can't be transcribed on this device.",
 };
 
-function setMicState(recording) {
-  micBtn.classList.toggle("recording", recording);
-  micBtn.textContent = recording ? "⏹️" : "🎤";
+function setMicState(mode, recording) {
+  mode.btn.classList.toggle("recording", recording);
+  mode.btn.textContent = recording ? "⏹️" : "🎤";
 }
 
 function stopListening() {
@@ -201,7 +243,8 @@ function stopListening() {
     mediaRecorder.stop();
   }
   mediaRecorder = null;
-  setMicState(false);
+  for (const mode of Object.values(MODES)) setMicState(mode, false);
+  active = null;
 }
 
 // Ask for microphone permission explicitly. Speech recognition on Android
@@ -217,37 +260,42 @@ async function ensureMicPermission() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     throw new Error("🚫🎤 This browser can't use the microphone. Use Google Chrome.");
   }
-  let stream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    return await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
     if (err.name === "NotAllowedError" || err.name === "SecurityError") throw new Error(RECOGNITION_ERRORS["not-allowed"]);
     throw new Error(RECOGNITION_ERRORS["audio-capture"]);
   }
-  return stream;
 }
 
 function releaseStream(stream) {
   stream.getTracks().forEach((t) => t.stop());
 }
 
-async function startListening() {
+async function startListening(mode) {
   if (window.speechSynthesis) speechSynthesis.cancel();
   playback.hidden = true;
-  setMicState(true);
-  showTranscript("⏳🎤", "");
+  active = mode;
+  setMicState(mode, true);
+  mode.panel.show("⏳🎤", "");
 
   let stream;
   try {
     stream = await ensureMicPermission();
   } catch (err) {
-    setMicState(false);
-    showTranscript("❌", err.message);
+    stopListening();
+    mode.panel.show("❌", err.message);
     return;
   }
 
   if (!Recognition) {
-    startAudioRecording(stream, "Speech recognition isn't available in this browser, so the message is recorded instead.");
+    if (mode.audioFallback) {
+      startAudioRecording(mode, stream, "Speech recognition isn't available in this browser, so the message is recorded instead.");
+    } else {
+      releaseStream(stream);
+      stopListening();
+      mode.panel.show("❌", "Speech recognition isn't available in this browser. Use Google Chrome.");
+    }
     return;
   }
 
@@ -255,36 +303,35 @@ async function startListening() {
   // (and let text-to-speech release audio focus) before recognition starts.
   releaseStream(stream);
   await new Promise((r) => setTimeout(r, 300));
-  if (!micBtn.classList.contains("recording")) return; // cancelled meanwhile
+  if (active !== mode) return; // cancelled meanwhile
 
-  startRecognition();
+  startRecognition(mode);
 }
 
-function startRecognition() {
-  finalText = "";
+function startRecognition(mode) {
   latestText = "";
   let failed = null;
   const rec = new Recognition();
   recognizer = rec;
-  rec.lang = state.lang.tts;
+  rec.lang = mode.from().tts;
   rec.interimResults = true;
   rec.continuous = false;
   rec.maxAlternatives = 1;
 
-  rec.onaudiostart = () => showTranscript("👂…", "");
+  rec.onaudiostart = () => mode.panel.show("👂…", "");
   rec.onspeechstart = () => {
-    if (!latestText) $("#heard").textContent = "🗣️…";
+    if (!latestText) mode.panel.heard.textContent = "🗣️…";
   };
 
   rec.onresult = (event) => {
+    let finalText = "";
     let interim = "";
-    finalText = "";
     for (const result of event.results) {
       if (result.isFinal) finalText += result[0].transcript;
       else interim += result[0].transcript;
     }
     latestText = finalText + interim;
-    $("#heard").textContent = latestText || "👂…";
+    mode.panel.heard.textContent = latestText || "👂…";
   };
 
   rec.onerror = (event) => {
@@ -296,21 +343,21 @@ function startRecognition() {
     recognizer = null;
     const heard = latestText.trim();
     if (heard) {
-      setMicState(false);
-      translateAndShow(heard);
-    } else if (failed && FALLBACK_ERRORS.includes(failed)) {
+      stopListening();
+      translateAndShow(mode, heard);
+    } else if (failed && mode.audioFallback && FALLBACK_ERRORS.includes(failed)) {
       // Recognition can't work here: record plain audio instead.
       navigator.mediaDevices
         .getUserMedia({ audio: true })
-        .then((s) => startAudioRecording(s, `${RECOGNITION_ERRORS[failed] || failed} Recording audio instead.`))
+        .then((s) => startAudioRecording(mode, s, `${RECOGNITION_ERRORS[failed] || failed} Recording audio instead.`))
         .catch(() => {
-          setMicState(false);
-          showTranscript("❌", RECOGNITION_ERRORS["audio-capture"]);
+          stopListening();
+          mode.panel.show("❌", RECOGNITION_ERRORS["audio-capture"]);
         });
     } else {
-      setMicState(false);
+      stopListening();
       const msg = failed ? RECOGNITION_ERRORS[failed] || `Error: ${failed}` : RECOGNITION_ERRORS["no-speech"];
-      if (failed !== "aborted") showTranscript("❌", msg);
+      if (failed !== "aborted") mode.panel.show("❌", msg);
     }
   };
 
@@ -318,17 +365,17 @@ function startRecognition() {
     rec.start();
   } catch (err) {
     recognizer = null;
-    setMicState(false);
-    showTranscript("❌", `Error: ${err.message}`);
+    stopListening();
+    mode.panel.show("❌", `Error: ${err.message}`);
   }
 }
 
 // Fallback: record the message so staff can listen to it (no translation).
-function startAudioRecording(stream, note) {
+function startAudioRecording(mode, stream, note) {
   if (!window.MediaRecorder) {
     releaseStream(stream);
-    setMicState(false);
-    showTranscript("❌", "This browser can't record audio.");
+    stopListening();
+    mode.panel.show("❌", "This browser can't record audio.");
     return;
   }
   const chunks = [];
@@ -338,30 +385,23 @@ function startAudioRecording(stream, note) {
   mr.onstop = () => {
     releaseStream(stream);
     mediaRecorder = null;
-    setMicState(false);
+    stopListening();
     if (!chunks.length) return;
     if (playback.src) URL.revokeObjectURL(playback.src);
     playback.src = URL.createObjectURL(new Blob(chunks, { type: mr.mimeType }));
     playback.hidden = false;
-    showTranscript("🎧 ▶️", note);
+    mode.panel.show("🎧 ▶️", note);
   };
   mr.start();
-  showTranscript("🔴 …", `${note} Tap ⏹️ when finished.`);
+  mode.panel.show("🔴 …", `${note} Tap ⏹️ when finished.`);
 }
 
-function showTranscript(heard, english) {
-  $("#transcript").hidden = false;
-  $("#heard").textContent = heard;
-  $("#heard").dir = "auto";
-  $("#english").textContent = english;
-}
-
-async function translateToEnglish(text, from) {
-  if (from === "en") return text;
+async function translate(text, from, to) {
+  if (from === to) return text;
   try {
     const url =
-      "https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&tl=en" +
-      `&sl=${encodeURIComponent(from)}&q=${encodeURIComponent(text)}`;
+      "https://translate.googleapis.com/translate_a/single?client=gtx&dt=t" +
+      `&sl=${encodeURIComponent(from)}&tl=${encodeURIComponent(to)}&q=${encodeURIComponent(text)}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(res.status);
     const data = await res.json();
@@ -372,39 +412,41 @@ async function translateToEnglish(text, from) {
   }
   const url =
     "https://api.mymemory.translated.net/get" +
-    `?langpair=${encodeURIComponent(from)}|en&q=${encodeURIComponent(text)}`;
+    `?langpair=${encodeURIComponent(from)}|${encodeURIComponent(to)}&q=${encodeURIComponent(text)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(res.status);
   const data = await res.json();
   return data.responseData.translatedText;
 }
 
-async function translateAndShow(heard) {
-  showTranscript(heard, "⏳");
+async function translateAndShow(mode, heard) {
+  const from = mode.from();
+  const to = mode.to();
+  mode.panel.show(heard, "⏳");
   try {
-    const english = await translateToEnglish(heard, state.lang.tr);
-    $("#english").textContent = english;
-    speak(english, "en-GB");
+    const out = await translate(heard, from.tr, to.tr);
+    mode.panel.out.textContent = out;
+    speak(out, to.tts);
   } catch (_) {
-    $("#english").textContent = "❌📶 Translation failed (no internet?)";
+    mode.panel.out.textContent = "❌📶 Translation failed (no internet?)";
   }
 }
 
-micBtn.addEventListener("click", () => {
-  if (recognizer) {
-    recognizer.stop(); // onend will translate what was heard so far
-  } else if (mediaRecorder) {
-    mediaRecorder.stop(); // onstop will show the playback controls
-  } else if (micBtn.classList.contains("recording")) {
-    stopListening(); // still waiting for permission
-  } else {
-    startListening();
-  }
-});
-
-$("#speak-english").addEventListener("click", () => {
-  speak($("#english").textContent, "en-GB");
-});
+for (const mode of Object.values(MODES)) {
+  mode.btn.addEventListener("click", () => {
+    if (active === mode) {
+      if (recognizer) recognizer.stop(); // onend will translate what was heard so far
+      else if (mediaRecorder) mediaRecorder.stop(); // onstop will show the playback controls
+      else stopListening(); // still waiting for permission
+    } else {
+      stopListening();
+      startListening(mode);
+    }
+  });
+  mode.panel.speakBtn.addEventListener("click", () => {
+    speak(mode.panel.out.textContent, mode.to().tts);
+  });
+}
 
 // ---------- Navigation ----------
 

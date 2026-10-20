@@ -10,6 +10,9 @@ A tiny emoji-only web app that helps school staff talk with children who speak a
 3. **The child answers** by tapping an emoji (👍 👎 👦 👧 💦 …). It is shown full screen and spoken in English.
    **Or** they tap 🎤 and speak; their words are transcribed and translated into English (shown and spoken).
 
+4. **Staff can say anything else**: on the sentences screen, tap 🎤 at the top right and speak in English.
+   It is transcribed, translated into the child's language, shown and spoken out loud (🔊 repeats it).
+
 Tap the big emoji to repeat the question. ⬅️ goes back, 🌍 returns to the flags.
 
 ---

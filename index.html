@@ -15,10 +15,20 @@
   <header>
     <button id="back" class="icon-btn" aria-label="Back" hidden>⬅️</button>
     <div id="current" aria-live="polite"></div>
-    <button id="home" class="icon-btn" aria-label="Choose language" hidden>🌍</button>
+    <div class="header-right">
+      <button id="home" class="icon-btn" aria-label="Choose language" hidden>🌍</button>
+      <button id="staff-mic" class="icon-btn mic-small" aria-label="Speak English and translate it" hidden>🎤</button>
+    </div>
   </header>
 
   <main>
+    <!-- Staff speaks English, translated into the child's language -->
+    <div id="staff-panel" class="transcript" hidden>
+      <p><span aria-hidden="true">🇬🇧</span> <span id="staff-heard"></span></p>
+      <p class="english"><span id="staff-flag" aria-hidden="true"></span> <span id="staff-out"></span></p>
+      <button id="staff-speak" class="icon-btn" aria-label="Say it again">🔊</button>
+    </div>
+
     <!-- Screen 1: languages -->
     <section id="screen-langs" class="grid langs"></section>
 

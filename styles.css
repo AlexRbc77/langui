@@ -45,7 +45,10 @@ header {
 }
 
 #current { flex: 1; text-align: center; font-family: var(--emoji-font); font-size: 40px; line-height: 1; }
-header .icon-btn[hidden] { display: block !important; visibility: hidden; }
+#back[hidden] { display: block !important; visibility: hidden; }
+.header-right { width: 56px; height: 56px; }
+.mic-small.recording { background: var(--rec); animation: pulse 1.2s infinite; }
+#staff-panel { margin-bottom: 12px; }
 
 main { padding: 8px 12px 24px; max-width: 900px; margin: 0 auto; }
 
