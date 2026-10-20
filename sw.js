@@ -1,6 +1,6 @@
 // Caches the app shell so the menus and spoken questions work offline.
 // Recording/translation still need an internet connection.
-const CACHE = "emoji-talk-v3";
+const CACHE = "emoji-talk-v4";
 const FILES = [
   "./",
   "index.html",
@@ -30,8 +30,10 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || url.origin !== location.origin) return;
   // Network first so updates show up, cache as offline fallback.
+  // "no-cache" makes the browser check with the server instead of reusing
+  // its HTTP cache (GitHub Pages lets browsers keep files for 10 minutes).
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: "no-cache" })
       .then((res) => {
         const copy = res.clone();
         caches.open(CACHE).then((c) => c.put(event.request, copy));
