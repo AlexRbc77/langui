@@ -1,6 +1,6 @@
 // Caches the app shell so the menus and spoken questions work offline.
 // Recording/translation still need an internet connection.
-const CACHE = "emoji-talk-v1";
+const CACHE = "emoji-talk-v2";
 const FILES = [
   "./",
   "index.html",

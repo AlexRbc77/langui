@@ -108,6 +108,7 @@ function renderAsk() {
   );
 
   $("#transcript").hidden = true;
+  playback.hidden = true;
   stopListening();
 }
 
@@ -156,43 +157,126 @@ function hideAnswer() {
 overlay.addEventListener("click", hideAnswer);
 
 // ---------- Recording + translation ----------
+//
+// Primary path: Chrome's speech recognition (transcribes the child's language,
+// then we translate it to English).
+// Fallback path: if recognition is missing or fails, record raw audio with
+// MediaRecorder so staff can at least play the message back.
 
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognizer = null;
+let mediaRecorder = null;
 let finalText = "";
 let latestText = "";
 
 const micBtn = $("#mic");
+const playback = $("#playback");
+
+// Errors where plain audio recording is still worth trying.
+const FALLBACK_ERRORS = ["service-not-allowed", "language-not-supported", "network", "bad-grammar"];
+
+const RECOGNITION_ERRORS = {
+  "not-allowed": "🚫🎤 Microphone blocked. Tap the icon left of the address bar → Permissions → Microphone → Allow.",
+  "audio-capture": "🚫🎤 No microphone found, or another app is using it. Close other apps using the mic and try again.",
+  "no-speech": "🔇 No speech heard. Tap 🎤 and speak closer to the microphone. On a computer, check Chrome is using the right mic: chrome://settings/content/microphone",
+  network: "📶 Speech recognition needs internet.",
+  "service-not-allowed": "Speech recognition is turned off on this device.",
+  "language-not-supported": "This language can't be transcribed on this device.",
+};
+
+function setMicState(recording) {
+  micBtn.classList.toggle("recording", recording);
+  micBtn.textContent = recording ? "⏹️" : "🎤";
+}
 
 function stopListening() {
   if (recognizer) {
     recognizer.onend = null;
+    recognizer.onerror = null;
     recognizer.abort();
     recognizer = null;
   }
-  micBtn.classList.remove("recording");
-  micBtn.textContent = "🎤";
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.onstop = null;
+    mediaRecorder.stop();
+  }
+  mediaRecorder = null;
+  setMicState(false);
 }
 
-function startListening() {
-  if (!Recognition) {
-    showTranscript("❌🎤", "Speech recognition is not supported in this browser. Use Chrome on Android.");
+// Ask for microphone permission explicitly. Speech recognition on Android
+// doesn't always show the permission prompt itself, and fails silently
+// when permission was never granted.
+async function ensureMicPermission() {
+  if (location.protocol === "file:") {
+    throw new Error("🔒 The microphone doesn't work when index.html is opened as a file. Open the https:// link (or run `npx http-server .` and use http://localhost:8080).");
+  }
+  if (!window.isSecureContext) {
+    throw new Error("🔒 The microphone only works over https://. Open the app from its https:// link.");
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("🚫🎤 This browser can't use the microphone. Use Google Chrome.");
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    if (err.name === "NotAllowedError" || err.name === "SecurityError") throw new Error(RECOGNITION_ERRORS["not-allowed"]);
+    throw new Error(RECOGNITION_ERRORS["audio-capture"]);
+  }
+  return stream;
+}
+
+function releaseStream(stream) {
+  stream.getTracks().forEach((t) => t.stop());
+}
+
+async function startListening() {
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  playback.hidden = true;
+  setMicState(true);
+  showTranscript("⏳🎤", "");
+
+  let stream;
+  try {
+    stream = await ensureMicPermission();
+  } catch (err) {
+    setMicState(false);
+    showTranscript("❌", err.message);
     return;
   }
-  speechSynthesis && speechSynthesis.cancel();
+
+  if (!Recognition) {
+    startAudioRecording(stream, "Speech recognition isn't available in this browser, so the message is recorded instead.");
+    return;
+  }
+
+  // Android can only give the microphone to one user at a time, so free it
+  // (and let text-to-speech release audio focus) before recognition starts.
+  releaseStream(stream);
+  await new Promise((r) => setTimeout(r, 300));
+  if (!micBtn.classList.contains("recording")) return; // cancelled meanwhile
+
+  startRecognition();
+}
+
+function startRecognition() {
   finalText = "";
   latestText = "";
-  recognizer = new Recognition();
-  recognizer.lang = state.lang.tts;
-  recognizer.interimResults = true;
-  recognizer.continuous = false;
-  recognizer.maxAlternatives = 1;
+  let failed = null;
+  const rec = new Recognition();
+  recognizer = rec;
+  rec.lang = state.lang.tts;
+  rec.interimResults = true;
+  rec.continuous = false;
+  rec.maxAlternatives = 1;
 
-  micBtn.classList.add("recording");
-  micBtn.textContent = "⏹️";
-  showTranscript("👂…", "");
+  rec.onaudiostart = () => showTranscript("👂…", "");
+  rec.onspeechstart = () => {
+    if (!latestText) $("#heard").textContent = "🗣️…";
+  };
 
-  recognizer.onresult = (event) => {
+  rec.onresult = (event) => {
     let interim = "";
     finalText = "";
     for (const result of event.results) {
@@ -203,24 +287,66 @@ function startListening() {
     $("#heard").textContent = latestText || "👂…";
   };
 
-  recognizer.onerror = (event) => {
-    const messages = {
-      "not-allowed": "Microphone permission was refused.",
-      "no-speech": "No speech heard. Tap 🎤 to try again.",
-      network: "No internet connection.",
-      "language-not-supported": "This language is not supported for recording on this device.",
-    };
-    latestText = "";
-    showTranscript("❌", messages[event.error] || `Error: ${event.error}`);
+  rec.onerror = (event) => {
+    failed = event.error;
   };
 
-  recognizer.onend = () => {
+  rec.onend = () => {
+    if (recognizer !== rec) return;
+    recognizer = null;
     const heard = latestText.trim();
-    stopListening();
-    if (heard) translateAndShow(heard);
+    if (heard) {
+      setMicState(false);
+      translateAndShow(heard);
+    } else if (failed && FALLBACK_ERRORS.includes(failed)) {
+      // Recognition can't work here: record plain audio instead.
+      navigator.mediaDevices
+        .getUserMedia({ audio: true })
+        .then((s) => startAudioRecording(s, `${RECOGNITION_ERRORS[failed] || failed} Recording audio instead.`))
+        .catch(() => {
+          setMicState(false);
+          showTranscript("❌", RECOGNITION_ERRORS["audio-capture"]);
+        });
+    } else {
+      setMicState(false);
+      const msg = failed ? RECOGNITION_ERRORS[failed] || `Error: ${failed}` : RECOGNITION_ERRORS["no-speech"];
+      if (failed !== "aborted") showTranscript("❌", msg);
+    }
   };
 
-  recognizer.start();
+  try {
+    rec.start();
+  } catch (err) {
+    recognizer = null;
+    setMicState(false);
+    showTranscript("❌", `Error: ${err.message}`);
+  }
+}
+
+// Fallback: record the message so staff can listen to it (no translation).
+function startAudioRecording(stream, note) {
+  if (!window.MediaRecorder) {
+    releaseStream(stream);
+    setMicState(false);
+    showTranscript("❌", "This browser can't record audio.");
+    return;
+  }
+  const chunks = [];
+  const mr = new MediaRecorder(stream);
+  mediaRecorder = mr;
+  mr.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  mr.onstop = () => {
+    releaseStream(stream);
+    mediaRecorder = null;
+    setMicState(false);
+    if (!chunks.length) return;
+    if (playback.src) URL.revokeObjectURL(playback.src);
+    playback.src = URL.createObjectURL(new Blob(chunks, { type: mr.mimeType }));
+    playback.hidden = false;
+    showTranscript("🎧 ▶️", note);
+  };
+  mr.start();
+  showTranscript("🔴 …", `${note} Tap ⏹️ when finished.`);
 }
 
 function showTranscript(heard, english) {
@@ -267,6 +393,10 @@ async function translateAndShow(heard) {
 micBtn.addEventListener("click", () => {
   if (recognizer) {
     recognizer.stop(); // onend will translate what was heard so far
+  } else if (mediaRecorder) {
+    mediaRecorder.stop(); // onstop will show the playback controls
+  } else if (micBtn.classList.contains("recording")) {
+    stopListening(); // still waiting for permission
   } else {
     startListening();
   }

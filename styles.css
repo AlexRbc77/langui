@@ -152,6 +152,7 @@ button {
 .transcript p { margin: 6px 56px 6px 0; }
 .transcript .english { font-size: 24px; font-weight: 600; }
 .transcript .icon-btn { position: absolute; right: 12px; top: 12px; }
+.transcript audio { width: 100%; margin-top: 8px; }
 
 .overlay {
   position: fixed;
